@@ -4,14 +4,24 @@ import pytumblr
 import json
 import threading
 import argparse
+import progressbar
 
-# Authenticate via OAuth
+# Please generate and enter your own API key/secret and OAuth token/secret below.
+# You are using this script for your own purposes, and may have added your own customizations.
+# You agree to follow Tumblr's API License Agreement and ToS in utilizing any part of the following code.
+#   https://www.tumblr.com/policy/en/terms-of-service
+#   https://www.tumblr.com/docs/en/api_agreement
+
+# Prior to your first run, register your own application with Tumblr's API to obtain a key.
+#   https://www.tumblr.com/oauth/apps
+# Obtain your OAuth token/secret from Tumblr's API Console and enter the details below.
+#   https://api.tumblr.com/console/calls/user/info
+
 client = pytumblr.TumblrRestClient(
-    '',
-    '',
-    '',
-    ''
-)
+    '',  # consumer_key
+    '',  # consumer_secret
+    '',  # oauth_token
+    '')  # oauth_secret
 
 
 class GetPostsThread (threading.Thread):
@@ -23,8 +33,9 @@ class GetPostsThread (threading.Thread):
         self.limit = limit
 
     def run(self):
-        self.results.append(client.posts(self.blog_name + '.tumblr.com',
-                                         reblog_info=True, notes_info=True, offset=self.offset, limit=self.limit))
+        response = client.posts(self.blog_name + '.tumblr.com',
+                                         reblog_info=True, notes_info=True, offset=self.offset, limit=self.limit)
+        self.results.append(response)
 
 
 class GetLikesThread (threading.Thread):
@@ -49,6 +60,20 @@ class ReturnOnlyExistingBlogsThread (threading.Thread):
     def run(self):
         self.results.append(client.blog_info(self.blog_name + '.tumblr.com'))
 
+def threadThrottler(threads): #This may not be necessary...
+    threadsAwait = []
+
+    while len(threads) > 0:
+        limit = 10000 if len(threads) >= 100 else len(threads)
+        for t in range(limit):
+            thread = threads.pop()
+            threadsAwait += [thread]
+            thread.start()
+
+        for t in threadsAwait:
+            t.join()
+
+        threadsAwait = []
 
 def getPosts(blog_name, max_posts):
     results = []
@@ -66,7 +91,7 @@ def getPosts(blog_name, max_posts):
         thread.start()
 
         # 404 status means blog does not exist
-        if len(results) > 0 and results[0].get('meta') and results[0]['meta']['status'] == 404:
+        if len(results) > 0 and results[0].get('meta') and results[0]['meta']['status'] != 200:
             break
 
         if len(results) > 0 and max_posts == 0:
@@ -74,15 +99,21 @@ def getPosts(blog_name, max_posts):
 
         offset += 20
 
-    for t in threads:
-        t.join()
+    if args.verbose:
+        print "Retrieving posts..."
 
-    print "Done fetching data."
+        bar = progressbar.ProgressBar()
+        for t in bar(threads):
+            t.join()
+    else:
+        for t in threads:
+            t.join()
+
     return results
-
 
 def getLikes(blog_name, max_posts):
     results = []
+    threads = []
     offset = 0
     while offset + 20 <= max_posts or max_posts == 0:
         # Tumblr will return a max of 20 posts per API call
@@ -95,10 +126,7 @@ def getLikes(blog_name, max_posts):
         threads += [thread]
         thread.start()
 
-        # 404 status means blog does not exist
-        if len(results) > 0 and results[0].get('meta') and results[0]['meta']['status'] == 404:
-            break
-        elif len(results) > 0 and results[0].get('meta') and results[0]['meta']['status'] == 403:
+        if len(results) > 0 and results[0].get('meta') and results[0]['meta']['status'] != 200:
             break
 
         if len(results) > 0 and max_posts == 0:
@@ -106,8 +134,15 @@ def getLikes(blog_name, max_posts):
 
         offset += 20
 
-    for t in threads:
-        t.join()
+    if args.verbose:
+        print "Retrieving likes..."
+
+        bar = progressbar.ProgressBar()
+        for t in bar(threads):
+            t.join()
+    else:
+        for t in threads:
+            t.join()
 
     return results
 
@@ -117,9 +152,9 @@ def blogInPostsFrequency(blog_name, max_posts):
 
     results = getPosts(blog_name, max_posts)
 
-    # 404 status means blog does not exist
-    if results[0].get('meta') and results[0]['meta']['status'] == 404:
-        return ["Blog not found"]
+    if results[0].get('meta') and results[0]['meta']['status'] != 200:
+        print "HTTP Status Code: " + results[0]['meta']['status']
+        return
 
     for result in results:
         for post in result['posts']:
@@ -129,7 +164,9 @@ def blogInPostsFrequency(blog_name, max_posts):
                 else:
                     reblogged_from_list[post['reblogged_from_name']] = 1
 
-    print "Done calculating frequency."
+    if args.verbose:
+        print "Done calculating frequency."
+
     return reblogged_from_list
 
 
@@ -140,7 +177,8 @@ def tagInPostsFrequency(blog_name, max_posts):
 
     # 404 status means blog does not exist
     if results[0].get('meta') and results[0]['meta']['status'] == 404:
-        return ["Blog not found"]
+        print "Blog not found."
+        return
 
     for result in results:
         for post in result['posts']:
@@ -159,13 +197,15 @@ def comparePosts(source, destination, max_posts):
 
     # 404 status means blog does not exist
     if sourceResults[0].get('meta') and sourceResults[0]['meta']['status'] == 404:
-        return ["Source blog not found"]
+        print "Source blog not found"
+        return
 
     destinationResults = getPosts(destination, max_posts)
 
     # 404 status means blog does not exist
     if destinationResults[0].get('meta') and destinationResults[0]['meta']['status'] == 404:
-        return ["Destination blog not found"]
+        print "Destination blog not found"
+        return
 
     # Retrieve list of root reblog URLs to use as unique identifiers
     sourceRootReblogURLs = []
@@ -196,17 +236,17 @@ def compareLikes(source, destination, max_posts):
 
     # 404 status means blog does not exist
     if sourceResults[0].get('meta') and sourceResults[0]['meta']['status'] == 404:
-        return ["Source blog not found"]
+        print "Source blog not found"
     elif sourceResults[0].get('meta') and sourceResults[0]['meta']['status'] == 403:
-        return ["Source blog not sharing likes"]
+        print "Source blog not sharing likes"
 
     destinationResults = getLikes(destination, max_posts)
 
     # 404 status means blog does not exist
     if destinationResults[0].get('meta') and destinationResults[0]['meta']['status'] == 404:
-        return ["Destination blog not found"]
+        print "Destination blog not found"
     elif destinationResults[0].get('meta') and sourceResults[0]['meta']['status'] == 403:
-        return ["Source blog not sharing likes"]
+        print "Source blog not sharing likes"
 
     # Retrieve list of root reblog URLs to use as unique identifiers
     sourceLikeURLs = []
@@ -308,7 +348,9 @@ def returnOnlyExistingBlogs(dictionary):
         threads += [thread]
         thread.start()
 
-    for t in threads:
+    print "Checking existance of blogs..."
+    bar = progressbar.ProgressBar()
+    for t in bar(threads):
         t.join()
 
     for result in results:
@@ -317,7 +359,9 @@ def returnOnlyExistingBlogs(dictionary):
         else:
             blog_name = result['blog']['name']
             clean_dict[blog_name] = dictionary[blog_name]
-    print "Done filtering blog names."
+
+    if args.verbose:
+        print "Done filtering blog names."
     return clean_dict
 
 
@@ -327,9 +371,11 @@ def printInOrder(dictionary, descending, limit):
     if limit == 0:
         limit = len(dictionary)
 
-    for h, i in zip(count(), sorted(dictionary, key=dictionary.__getitem__, reverse=descending)):
-        if h <= limit:
+    count = 0
+    for i in sorted(dictionary, key=dictionary.__getitem__, reverse=descending):
+        if count <= limit:
             print(i + " " + str(dictionary[i]))
+            count += 1
         else:
             break
 
@@ -338,12 +384,49 @@ def printInOrder(dictionary, descending, limit):
 
 # CONTROL CENTER
 parser = argparse.ArgumentParser()
+group = parser.add_mutually_exclusive_group()
 parser.add_argument(
     "blog_name", help="the name of the blog you are searching on")
 parser.add_argument(
     "max_posts", help="the maximum amount of posts to take into consideration", type=int)
-parser.add_argument("top", help="how many results to print", type=int)
+parser.add_argument(
+    "--existing", help="only print existing blogs", action="store_true")
+parser.add_argument(
+    "--verbose", help="indicate progress", action="store_true")
+group.add_argument("--reblogs", help="blog reblog frequency",
+                   action="store_true")
+group.add_argument("--likes", help="blog like frequency", action="store_true")
+group.add_argument(
+    "--notes", help="blog appears in notes frequency", action="store_true")
+group.add_argument(
+    "--posttags", help="tag appears on post frequency", action="store_true")
+group.add_argument(
+    "--liketags", help="tag appears on like frequency", action="store_true")
+group.add_argument(
+    "--compareposts", help="compare posts shared between two blogs", action="store_true")
+group.add_argument(
+    "--comparelikes", help="compage likes shared between two blogs", action="store_true")
 args = parser.parse_args()
 
-printInOrder(returnOnlyExistingBlogs(blogInPostsFrequency(
-    args.blog_name, args.max_posts)), True, args.top)
+result = None
+if args.reblogs:
+    result = blogInPostsFrequency(args.blog_name, args.max_posts)
+if args.likes:
+    result = blogInLikesFrequency(args.blog_name, args.max_posts)
+if args.notes:
+    result = blogInNotesFrequency(args.blog_name, "both", args.max_posts)
+if args.posttags:
+    result = tagInPostsFrequency(args.blog_name, args.max_posts)
+if args.liketags:
+    result = tagInLikesFrtequency(args.blog_name, args.max_posts)
+if args.compareposts:
+    pass
+if args.comparelikes:
+    pass
+
+if args.existing and not (args.posttags or args.liketags or args.compareposts or args.comparelikes):
+    result = returnOnlyExistingBlogs(result)
+else:
+    print "Argument --existing is not compatible with arguments --posttags, --liketags, --compareposts, or --comparelikes."
+
+printInOrder(result, True, 0)
