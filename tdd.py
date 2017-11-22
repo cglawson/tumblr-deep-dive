@@ -426,6 +426,8 @@ if args.comparelikes:
 
 if args.existing and not (args.posttags or args.liketags or args.compareposts or args.comparelikes):
     result = returnOnlyExistingBlogs(result)
+elif not args.existing:
+    pass
 else:
     print "Argument --existing is not compatible with arguments --posttags, --liketags, --compareposts, or --comparelikes."
 
